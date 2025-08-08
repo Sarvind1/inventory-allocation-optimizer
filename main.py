@@ -32,10 +32,6 @@ def main():
         # Initialize components
         logger.info("Initializing components...")
         
-        # Validate config files first
-        validation = config_loader.validate_config_files()
-        logger.info(f"Config validation: {validation}")
-        
         # Database connection (uses environment variables if not provided)
         conn_params = {
             'user': os.getenv('REDSHIFT_USER', 'manh.nguyen@razor-group.com'),
