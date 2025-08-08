@@ -26,6 +26,8 @@ def clear_config_cache():
     """Clear the configuration cache to force reload"""
     global _config_cache
     _config_cache.clear()
+    # Clear LRU cache as well
+    _load_csv_file.cache_clear()
     logger.info("Configuration cache cleared")
 
 @lru_cache(maxsize=128)
@@ -72,13 +74,15 @@ def get_transport_leadtimes() -> Dict[str, int]:
     
     df = _load_csv_file('transport_leadtimes.csv')
     if df is None:
+        logger.warning("Transport leadtimes file not found, using empty dict")
+        _config_cache[cache_key] = {}
         return {}
     
     # Convert to dictionary for fast lookup
     transport_dict = {}
     for _, row in df.iterrows():
-        route_id = f"{row['departure_region']}{row['arrival_region']}"
         try:
+            route_id = f"{row['departure_region']}{row['arrival_region']}"
             leadtime = int(row['p2plt_non_air'])
             transport_dict[route_id] = leadtime
         except (ValueError, KeyError) as e:
@@ -100,6 +104,8 @@ def get_port_buffer_dict() -> Dict[tuple, int]:
     
     df = _load_csv_file('port_to_channel_buffer.csv')
     if df is None:
+        logger.warning("Port buffer file not found, using empty dict")
+        _config_cache[cache_key] = {}
         return {}
     
     buffer_dict = {}
@@ -127,6 +133,8 @@ def get_country_region_dict() -> Dict[str, str]:
     
     df = _load_csv_file('country_region_mapping.csv')
     if df is None:
+        logger.warning("Country region mapping file not found, using empty dict")
+        _config_cache[cache_key] = {}
         return {}
     
     country_dict = {}
@@ -152,6 +160,8 @@ def get_asia_countries_list() -> List[str]:
     
     df = _load_csv_file('asia_countries.csv')
     if df is None:
+        logger.warning("Asia countries file not found, using empty list")
+        _config_cache[cache_key] = []
         return []
     
     try:
@@ -161,24 +171,32 @@ def get_asia_countries_list() -> List[str]:
         return asia_list
     except KeyError:
         logger.error("Asia countries CSV missing 'country' column")
+        _config_cache[cache_key] = []
         return []
 
 # Main lookup functions for business logic
 
-def get_transport_leadtime(departure_region: str, arrival_region: str) -> Optional[int]:
+def get_transport_leadtime(departure_region: str, arrival_region: str, default_days: int = 30) -> int:
     """
     Get transport lead time for a route
     
     Args:
         departure_region: Departure region code
         arrival_region: Arrival region code
+        default_days: Default leadtime if route not found
         
     Returns:
-        Lead time in days or None if not found
+        Lead time in days (default if not found)
     """
     transport_dict = get_transport_leadtimes()
     route_id = f"{departure_region}{arrival_region}"
-    return transport_dict.get(route_id)
+    leadtime = transport_dict.get(route_id)
+    
+    if leadtime is None:
+        logger.warning(f"Transport route {route_id} not found, using default {default_days} days")
+        return default_days
+    
+    return leadtime
 
 def get_port_buffer_days(wh_type: str, location: str) -> int:
     """
@@ -193,7 +211,13 @@ def get_port_buffer_days(wh_type: str, location: str) -> int:
     """
     buffer_dict = get_port_buffer_dict()
     key = (wh_type, location)
-    return buffer_dict.get(key, 39)  # Default value as per original logic
+    buffer_days = buffer_dict.get(key)
+    
+    if buffer_days is None:
+        logger.warning(f"Port buffer for {key} not found, using default 39 days")
+        return 39
+    
+    return buffer_days
 
 def get_region_for_country(country: str) -> Optional[str]:
     """
@@ -206,7 +230,12 @@ def get_region_for_country(country: str) -> Optional[str]:
         Region code or None if not found
     """
     country_dict = get_country_region_dict()
-    return country_dict.get(country)
+    region = country_dict.get(country)
+    
+    if region is None:
+        logger.warning(f"Region for country '{country}' not found")
+    
+    return region
 
 def is_asia_country(country: str) -> bool:
     """
@@ -241,7 +270,8 @@ def load_all_config_data() -> Dict[str, Union[Dict, List]]:
 def apply_transport_leadtimes_vectorized(df: pd.DataFrame, 
                                        departure_col: str = 'departure_region',
                                        arrival_col: str = 'arrival_region',
-                                       output_col: str = 'transport_leadtime') -> pd.DataFrame:
+                                       output_col: str = 'transport_leadtime',
+                                       default_days: int = 30) -> pd.DataFrame:
     """
     Apply transport lead times to a DataFrame efficiently
     Uses vectorized operations instead of row-by-row lookups
@@ -251,6 +281,7 @@ def apply_transport_leadtimes_vectorized(df: pd.DataFrame,
         departure_col: Column name for departure region
         arrival_col: Column name for arrival region
         output_col: Column name for output leadtime
+        default_days: Default leadtime for missing routes
         
     Returns:
         DataFrame with transport leadtimes added
@@ -264,8 +295,13 @@ def apply_transport_leadtimes_vectorized(df: pd.DataFrame,
     df_copy = df.copy()
     df_copy['_route_id'] = df_copy[departure_col].astype(str) + df_copy[arrival_col].astype(str)
     
-    # Map leadtimes using vectorized operation
-    df_copy[output_col] = df_copy['_route_id'].map(transport_dict)
+    # Map leadtimes using vectorized operation with default
+    df_copy[output_col] = df_copy['_route_id'].map(transport_dict).fillna(default_days).astype(int)
+    
+    # Log missing routes
+    missing_routes = df_copy[df_copy[output_col] == default_days]['_route_id'].unique()
+    if len(missing_routes) > 0:
+        logger.warning(f"Missing transport routes (using {default_days} days): {list(missing_routes)}")
     
     # Drop temporary column
     df_copy.drop('_route_id', axis=1, inplace=True)
@@ -298,7 +334,11 @@ def apply_port_buffers_vectorized(df: pd.DataFrame,
     # Create lookup function for tuple keys
     def lookup_buffer(row):
         key = (row[wh_type_col], row[location_col])
-        return buffer_dict.get(key, 39)
+        buffer_days = buffer_dict.get(key)
+        if buffer_days is None:
+            logger.warning(f"Port buffer for {key} not found, using default 39 days")
+            return 39
+        return buffer_days
     
     # Apply function (still faster than individual lookups due to batching)
     df_copy[output_col] = df_copy.apply(lookup_buffer, axis=1)
@@ -329,10 +369,53 @@ def get_cache_info():
         'csv_cache_info': _load_csv_file.cache_info()
     }
 
+def validate_config_files():
+    """
+    Validate all configuration files exist and have correct structure
+    Returns dict with validation results
+    """
+    validation_results = {}
+    
+    # Required files and their expected columns
+    required_files = {
+        'transport_leadtimes.csv': ['departure_region', 'arrival_region', 'p2plt_non_air'],
+        'port_to_channel_buffer.csv': ['wh_type_LT', 'WH_Location', 'p2pbf'],
+        'country_region_mapping.csv': ['country', 'region'],
+        'asia_countries.csv': ['country']
+    }
+    
+    for filename, expected_cols in required_files.items():
+        filepath = _config_dir / filename
+        
+        if not filepath.exists():
+            validation_results[filename] = {'exists': False, 'valid_columns': False, 'error': 'File not found'}
+            continue
+        
+        try:
+            df = pd.read_csv(filepath)
+            missing_cols = set(expected_cols) - set(df.columns)
+            
+            validation_results[filename] = {
+                'exists': True,
+                'valid_columns': len(missing_cols) == 0,
+                'missing_columns': list(missing_cols),
+                'row_count': len(df)
+            }
+        except Exception as e:
+            validation_results[filename] = {'exists': True, 'valid_columns': False, 'error': str(e)}
+    
+    return validation_results
+
 # Example usage and testing
 if __name__ == "__main__":
+    # Test validation first
+    print("Validating configuration files...")
+    validation = validate_config_files()
+    for file, result in validation.items():
+        print(f"{file}: {result}")
+    
     # Test all functions
-    print("Testing optimized config loader...")
+    print("\nTesting optimized config loader...")
     
     # Test individual lookups
     leadtime = get_transport_leadtime('CN', 'US')
