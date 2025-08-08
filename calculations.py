@@ -216,11 +216,11 @@ def generate_recommendations(dim_final):
     current_week = datetime.today().isocalendar().week
     current_year = datetime.today().isocalendar().year
     
-    # Calculate future demand periods
-    demand_columns = get_demand_columns(current_week, current_year, 10)
+    # Calculate future demand periods (check which columns actually exist)
+    demand_columns = get_existing_demand_columns(dim_final, current_week, current_year, 10)
     dim_final['future_demand_10w'] = dim_final[demand_columns].sum(axis=1) if demand_columns else 0
     
-    demand_columns_7w = get_demand_columns(current_week, current_year, 7)
+    demand_columns_7w = get_existing_demand_columns(dim_final, current_week, current_year, 7)
     dim_final['future_demand_7w'] = dim_final[demand_columns_7w].sum(axis=1) if demand_columns_7w else 0
     
     # TO Check logic
@@ -247,10 +247,10 @@ def generate_recommendations(dim_final):
     )
     
     # FFW recommendations
-    demand_columns_14w = get_demand_columns(current_week, current_year, 14)
+    demand_columns_14w = get_existing_demand_columns(dim_final, current_week, current_year, 14)
     dim_final['future_demand_14w'] = dim_final[demand_columns_14w].sum(axis=1) if demand_columns_14w else 0
     
-    demand_columns_18w = get_demand_columns(current_week, current_year, 18)
+    demand_columns_18w = get_existing_demand_columns(dim_final, current_week, current_year, 18)
     dim_final['future_demand_18w'] = dim_final[demand_columns_18w].sum(axis=1) if demand_columns_18w else 0
     
     dim_final['FFW + Supply Ops'] = np.where(
@@ -286,6 +286,24 @@ def generate_recommendations(dim_final):
     logger.info("Recommendations generated")
     return dim_final
 
+def get_existing_demand_columns(df, start_week, year, num_weeks):
+    """Get demand column names that actually exist in the DataFrame"""
+    columns = []
+    week = start_week
+    current_year = year
+    
+    for _ in range(num_weeks):
+        if week > 52:
+            week = 1
+            current_year += 1
+        
+        col_name = f'CW{week:02d}-{current_year}_demand'
+        if col_name in df.columns:
+            columns.append(col_name)
+        week += 1
+    
+    return columns
+
 def get_demand_columns(start_week, year, num_weeks):
     """Get demand column names for specified number of weeks"""
     columns = []
@@ -300,30 +318,37 @@ def get_demand_columns(start_week, year, num_weeks):
         columns.append(f'CW{week:02d}-{current_year}_demand')
         week += 1
     
-    return [col for col in columns]
+    return columns
 
-def calculate_lead_times(dim_final, transport_map):
-    """Calculate total lead times"""
+def calculate_lead_times(dim_final, config):
+    """Calculate total lead times using config functions"""
     
-    # Calculate transport lead time
-    dim_final['transport_leadtime'] = dim_final.apply(
-        lambda row: transport_map.get(
-            (row.get('shipping_region'), row.get('mp')), 45
-        ),
-        axis=1
-    )
+    # Calculate transport lead time using config
+    def get_transport_time(row):
+        if hasattr(config, 'get_transport_leadtime'):
+            return config.get_transport_leadtime(
+                row.get('shipping_region', ''), 
+                row.get('mp', ''), 
+                45
+            )
+        else:
+            return 45
     
-    # Calculate p2cbf
-    mp_mapping = {
-        'US': 39, 'CO': 39, 'MX': 39, 'CA': 39,
-        'UK': 39, 'BR': 36, 'EU': 40, 'Other': 39
-    }
+    dim_final['transport_leadtime'] = dim_final.apply(get_transport_time, axis=1)
     
-    dim_final['p2cbf'] = dim_final.apply(
-        lambda row: 0 if row.get('mp') == row.get('shipping_region') 
-                     else mp_mapping.get(row.get('mp'), 39),
-        axis=1
-    )
+    # Calculate p2cbf using config
+    def get_port_buffer(row):
+        if hasattr(config, 'get_port_buffer_days'):
+            wh_type = 'AMZ' if row.get('mp') in ['US', 'UK', 'EU', 'CA'] else '3PL'
+            return config.get_port_buffer_days(wh_type, row.get('mp', ''))
+        else:
+            mp_mapping = {
+                'US': 39, 'CO': 39, 'MX': 39, 'CA': 39,
+                'UK': 39, 'BR': 36, 'EU': 40, 'Other': 39
+            }
+            return 0 if row.get('mp') == row.get('shipping_region') else mp_mapping.get(row.get('mp'), 39)
+    
+    dim_final['p2cbf'] = dim_final.apply(get_port_buffer, axis=1)
     
     # Fill missing lead times
     dim_final['lead_time_production_days'] = dim_final.get(
@@ -383,10 +408,9 @@ def calculate_all(processed_data, config):
         # Generate recommendations
         dim_final = generate_recommendations(dim_final)
         
-        # Calculate lead times if transport map available
-        transport_map = config.get_transport_map_dict() if hasattr(config, 'get_transport_map_dict') else {}
-        if transport_map:
-            dim_final = calculate_lead_times(dim_final, transport_map)
+        # Calculate lead times if config available
+        if config:
+            dim_final = calculate_lead_times(dim_final, config)
         
         # Create results dictionary
         results = {
