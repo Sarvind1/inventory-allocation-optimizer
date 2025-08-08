@@ -1,166 +1,192 @@
 """
-Configuration loader - handles all configuration files
+Enhanced Configuration Loader
+Loads configuration data from CSV files for better maintainability
 """
 
 import pandas as pd
-import json
+import logging
 from pathlib import Path
 
-def load_config_files(config_dir="config"):
-    """Load all configuration files"""
-    
-    config_path = Path(config_dir)
-    config_path.mkdir(exist_ok=True)
-    
-    config = {}
-    
-    # Database connection parameters
-    config['conn_params'] = {
-        'user': 'manh.nguyen@razor-group.com',
-        'password': 'qdkcTHB8CPfe7AQHVNEF',
-        'database': 'dev',
-        'host': 'datawarehouse-dev.cdg4y3yokxle.eu-central-1.redshift.amazonaws.com',
-        'port': 5439
-    }
-    
-    # Load transport map
-    transport_file = config_path / "transport_leadtimes.csv"
-    if not transport_file.exists():
-        create_default_transport_map(transport_file)
-    
-    df_transport = pd.read_csv(transport_file)
-    config['transport_map'] = {
-        (row['shipping_region'], row['arrival_region']): row['leadtime_days']
-        for _, row in df_transport.iterrows()
-    }
-    
-    # Load p2pbf map
-    p2pbf_file = config_path / "p2pbf_mapping.csv"
-    if not p2pbf_file.exists():
-        create_default_p2pbf(p2pbf_file)
-    
-    df_p2pbf = pd.read_csv(p2pbf_file)
-    config['p2pbf_map'] = {
-        (row['wh_type'], row['location']): row['buffer_days']
-        for _, row in df_p2pbf.iterrows()
-    }
-    
-    # Load business rules
-    rules_file = config_path / "business_rules.json"
-    if not rules_file.exists():
-        create_default_business_rules(rules_file)
-    
-    with open(rules_file, 'r') as f:
-        config['business_rules'] = json.load(f)
-    
-    # Marketplace mapping
-    config['mp_mapping'] = {
-        'US': 39, 'CO': 39, 'MX': 39, 'CA': 39,
-        'UK': 39, 'BR': 36, 'EU': 40, 'Other': 39
-    }
-    
-    # Debug settings
-    config['save_debug_files'] = True
-    
-    return config
+logger = logging.getLogger(__name__)
 
-def create_default_transport_map(file_path):
-    """Create default transport lead times CSV"""
+class ConfigLoader:
+    """Loads and manages configuration data from CSV files"""
     
-    data = [
-        ('CN', 'US', 39), ('CN', 'EU', 42), ('CN', 'UK', 34), ('CN', 'Asia', 23),
-        ('IN', 'US', 45), ('IN', 'EU', 33), ('IN', 'UK', 26), ('EU', 'US', 40),
-        ('UK', 'US', 36), ('US', 'UK', 52), ('US', 'EU', 20), ('CN', 'MX', 39),
-        ('CN', 'CO', 39), ('CN', 'BR', 39), ('CN', 'CA', 39), ('US', 'MX', 15),
-        ('US', 'CO', 15), ('US', 'BR', 15), ('US', 'CA', 15), ('EU', 'MX', 40),
-        ('EU', 'CO', 40), ('EU', 'BR', 40), ('EU', 'CA', 40), ('MX', 'CN', 20),
-        ('MX', 'UK', 15), ('CO', 'MX', 15), ('BR', 'MX', 15), ('BR', 'CO', 15),
-        ('BR', 'EU', 15), ('BR', 'IN', 15), ('UK', 'CA', 15), ('UK', 'JP', 15),
-        ('AU', 'Other', 15), ('Other', 'AU', 15), ('EU', 'JP', 10), ('CO', 'EU', 39),
-        ('CN', 'CN', 39), ('US', 'CN', 39), ('BR', 'BR', 15), ('MX', 'BR', 15),
-        ('EU', 'UK', 40), ('US', 'US', 7), ('EU', 'EU', 7), ('CA', 'CA', 2),
-        ('CA', 'US', 2), ('CA', 'UK', 15), ('CA', 'EU', 40), ('CA', 'BR', 40),
-        ('CA', 'MX', 40), ('IN', 'CA', 45), ('IN', 'CO', 15), ('IN', 'BR', 15),
-        ('IN', 'MX', 40), ('MX', 'MX', 15), ('CO', 'CO', 7), ('UK', 'UK', 2),
-        ('BR', 'US', 15), ('BR', 'CA', 15), ('CO', 'US', 15), ('CO', 'CA', 39),
-        ('MX', 'US', 40), ('MX', 'CA', 40), ('MX', 'CO', 15), ('AU', 'CN', 15),
-        ('EU', 'AU', 7), ('MX', 'AU', 7), ('UK', 'AU', 2), ('CO', 'JP', 2),
-        ('CN', 'JP', 20), ('BR', 'JP', 15), ('IN', 'JP', 15), ('IN', 'Asia', 23),
-        ('JP', 'US', 39), ('CA', 'CO', 20), ('UK', 'EU', 7)
-    ]
+    def __init__(self, config_dir='config'):
+        """
+        Initialize the configuration loader
+        
+        Args:
+            config_dir: Directory containing configuration CSV files
+        """
+        self.config_dir = Path(config_dir)
+        self.transport_leadtimes = None
+        self.port_to_channel_buffer = None
+        self.country_region_mapping = None
+        self.asia_countries = None
+        self._load_all_configs()
     
-    df = pd.DataFrame(data, columns=['shipping_region', 'arrival_region', 'leadtime_days'])
-    df.to_csv(file_path, index=False)
-    print(f"Created transport map: {file_path}")
+    def _load_all_configs(self):
+        """Load all configuration files"""
+        try:
+            # Load transport lead times
+            self.transport_leadtimes = self._load_csv('transport_leadtimes.csv')
+            if self.transport_leadtimes is not None:
+                # Create id_route as index for quick lookup
+                self.transport_leadtimes.set_index('id_route', inplace=True)
+                logger.info(f"Loaded {len(self.transport_leadtimes)} transport routes")
+            
+            # Load port to channel buffer
+            self.port_to_channel_buffer = self._load_csv('port_to_channel_buffer.csv')
+            if self.port_to_channel_buffer is not None:
+                logger.info(f"Loaded {len(self.port_to_channel_buffer)} port buffer configs")
+            
+            # Load country to region mapping
+            self.country_region_mapping = self._load_csv('country_region_mapping.csv')
+            if self.country_region_mapping is not None:
+                # Create dictionary for quick lookup
+                self.country_to_region_dict = dict(
+                    zip(self.country_region_mapping['country'], 
+                        self.country_region_mapping['region'])
+                )
+                logger.info(f"Loaded {len(self.country_region_mapping)} country mappings")
+            
+            # Load Asia countries list
+            self.asia_countries = self._load_csv('asia_countries.csv')
+            if self.asia_countries is not None:
+                self.asia_countries_list = self.asia_countries['country'].tolist()
+                logger.info(f"Loaded {len(self.asia_countries_list)} Asia countries")
+            
+        except Exception as e:
+            logger.error(f"Error loading configurations: {e}")
+    
+    def _load_csv(self, filename):
+        """Load a single CSV file"""
+        filepath = self.config_dir / filename
+        if filepath.exists():
+            try:
+                df = pd.read_csv(filepath)
+                logger.info(f"Successfully loaded {filename}")
+                return df
+            except Exception as e:
+                logger.error(f"Error loading {filename}: {e}")
+                return None
+        else:
+            logger.warning(f"Configuration file not found: {filepath}")
+            return None
+    
+    def get_transport_leadtime(self, departure_region, arrival_region):
+        """
+        Get transport lead time for a specific route
+        
+        Args:
+            departure_region: Departure region code
+            arrival_region: Arrival region code
+            
+        Returns:
+            Lead time in days or None if route not found
+        """
+        route_id = f"{departure_region}{arrival_region}"
+        try:
+            return self.transport_leadtimes.loc[route_id, 'p2plt_non_air']
+        except:
+            logger.warning(f"Route not found: {route_id}")
+            return None
+    
+    def get_p2pbf(self, wh_type, location):
+        """
+        Get port to channel buffer days
+        
+        Args:
+            wh_type: Warehouse type (3PL or AMZ)
+            location: Warehouse location
+            
+        Returns:
+            Buffer days or default value
+        """
+        try:
+            mask = (self.port_to_channel_buffer['wh_type_LT'] == wh_type) & \
+                   (self.port_to_channel_buffer['WH_Location'] == location)
+            result = self.port_to_channel_buffer[mask]['p2pbf'].values
+            if len(result) > 0:
+                return result[0]
+        except:
+            pass
+        
+        # Return default value
+        return 39
+    
+    def get_region_for_country(self, country):
+        """
+        Get region code for a country
+        
+        Args:
+            country: Country name
+            
+        Returns:
+            Region code or None if not found
+        """
+        return self.country_to_region_dict.get(country)
+    
+    def is_asia_country(self, country):
+        """
+        Check if a country is in Asia
+        
+        Args:
+            country: Country name
+            
+        Returns:
+            True if country is in Asia, False otherwise
+        """
+        return country in self.asia_countries_list
+    
+    def get_transport_map_dict(self):
+        """
+        Get transport lead times as a dictionary for compatibility
+        
+        Returns:
+            Dictionary with (departure, arrival) tuples as keys
+        """
+        transport_map = {}
+        for idx, row in self.transport_leadtimes.iterrows():
+            key = (row['departure_region'], row['arrival_region'])
+            transport_map[key] = row['p2plt_non_air']
+        return transport_map
+    
+    def reload_configs(self):
+        """Reload all configuration files"""
+        logger.info("Reloading all configuration files...")
+        self._load_all_configs()
 
-def create_default_p2pbf(file_path):
-    """Create default p2pbf mapping CSV"""
-    
-    data = [
-        ('3PL', 'US', 39), ('3PL', 'CO', 39), ('3PL', 'MX', 39),
-        ('AMZ', 'US', 25), ('3PL', 'BR', 39), ('3PL', 'EU', 40),
-        ('AMZ', 'EU', 26), ('3PL', 'CA', 39), ('AMZ', 'UK', 22),
-        ('3PL', 'UK', 39), ('3PL', 'Other', 39), ('AMZ', 'CA', 25)
-    ]
-    
-    df = pd.DataFrame(data, columns=['wh_type', 'location', 'buffer_days'])
-    df.to_csv(file_path, index=False)
-    print(f"Created p2pbf map: {file_path}")
+# Convenience functions for backward compatibility
+def load_transport_mappings():
+    """Load transport mappings from CSV files"""
+    loader = ConfigLoader()
+    return loader.transport_leadtimes, loader.port_to_channel_buffer
 
-def create_default_business_rules(file_path):
-    """Create default business rules JSON"""
+def get_asia_countries():
+    """Get list of Asia countries"""
+    loader = ConfigLoader()
+    return loader.asia_countries_list
+
+def get_country_to_region_mapping():
+    """Get country to region mapping dictionary"""
+    loader = ConfigLoader()
+    return loader.country_to_region_dict
+
+# Example usage
+if __name__ == "__main__":
+    # Initialize config loader
+    config = ConfigLoader()
     
-    rules = {
-        "asia_countries": [
-            "China", "Hong Kong", "Malaysia", "Taiwan (Province of China)",
-            "Viet Nam", "Korea (the Republic of)", "Singapore", "Japan"
-        ],
-        "po_splitting": {
-            "max_cartons_for_3pl": 5,
-            "default_lead_time_days": 45,
-            "po_processing_time": 15
-        },
-        "inventory_thresholds": {
-            "min_units_per_carton": 1,
-            "default_units_per_carton": 10
-        },
-        "marketplace_mappings": {
-            "Pan-EU": "EU",
-            "DE": "EU",
-            "GB": "UK",
-            "North America": "US"
-        },
-        "signed_stages": [
-            "12. Ready for Batching Pending",
-            "13. Batch Creation Pending",
-            "14. SM Sign-Off Pending",
-            "15. CI Approval Pending",
-            "16. CI Payment Pending",
-            "17. QC Schedule Pending",
-            "18. FFW Booking Missing",
-            "19. Supplier Pickup Date Pending",
-            "20. Pre Pickup Check",
-            "21. FOB Pickup Pending",
-            "22. Non FOB Pickup Pending",
-            "23. INB Creation Pending"
-        ],
-        "unsigned_stages": [
-            "01. PO Approval Pending",
-            "02. Supplier Confirmation Pending",
-            "03. PI Upload Pending",
-            "04. PI Approval Pending",
-            "05. PI Payment Pending",
-            "06. Packaging Pending",
-            "07. Transperancy Label Pending",
-            "08. PRD Pending",
-            "09. Under Production",
-            "10. PRD Confirmation Pending",
-            "11. IM Sign-Off Pending",
-            "A. Anti PO Line",
-            "B. Compliance Blocked"
-        ]
-    }
+    # Example: Get transport lead time
+    leadtime = config.get_transport_leadtime('CN', 'US')
+    print(f"Lead time from CN to US: {leadtime} days")
     
-    with open(file_path, 'w') as f:
-        json.dump(rules, f, indent=2)
-    print(f"Created business rules: {file_path}")
+    # Example: Get region for country
+    region = config.get_region_for_country('China')
+    print(f"Region for China: {region}")
+    
+    # Example: Check if country is in Asia
+    is_asia = config.is_asia_country('China')
+    print(f"Is China in Asia? {is_asia}")
