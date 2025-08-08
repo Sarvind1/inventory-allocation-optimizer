@@ -4,10 +4,11 @@ All classes removed and replaced with functions as requested
 """
 
 import os
+import pandas as pd
 import logging
 from datetime import datetime
 from database_connector import DatabaseConnector
-from config_loader import ConfigLoader
+import config_loader
 from data_processor import (
     process_demand_data, process_inventory_data, process_open_po_data,
     process_inbound_data, process_master_data, process_vendor_data, process_gfl_data
@@ -31,6 +32,10 @@ def main():
         # Initialize components
         logger.info("Initializing components...")
         
+        # Validate config files first
+        validation = config_loader.validate_config_files()
+        logger.info(f"Config validation: {validation}")
+        
         # Database connection (uses environment variables if not provided)
         conn_params = {
             'user': os.getenv('REDSHIFT_USER', 'manh.nguyen@razor-group.com'),
@@ -41,7 +46,6 @@ def main():
         }
         
         db = DatabaseConnector(conn_params)
-        config = ConfigLoader()
         
         # Define required queries
         required_queries = [
@@ -124,7 +128,7 @@ def main():
         
         # Run calculations using function instead of class
         logger.info("Running inventory calculations...")
-        results = calculate_all(processed_data, config)
+        results = calculate_all(processed_data, config_loader)
         
         # Save results
         output_dir = 'output'
@@ -170,6 +174,4 @@ def main():
             logger.info("Database connection closed")
 
 if __name__ == "__main__":
-    # Import pandas here since it's used in the main function
-    import pandas as pd
     results = main()
