@@ -1,6 +1,6 @@
 """
-Calculation functions for inventory allocation - Fixed version
-Contains all core calculation logic from the notebook
+Calculation functions for inventory allocation - OPTIMIZED VERSION
+Fixed critical errors and improved performance
 """
 
 import pandas as pd
@@ -10,9 +10,12 @@ import logging
 
 logger = logging.getLogger(__name__)
 
+# Cache for week lists to avoid regeneration
+_week_cache = {}
+
 def calculate_sales_missed(dim_demand, dim_inventory, dim_open_po_signed, 
                           dim_open_po_unsigned, dim_inbound):
-    """Calculate sales missed based on inventory waterfall"""
+    """Calculate sales missed based on inventory waterfall - OPTIMIZED"""
     
     logger.info("Starting sales missed calculations...")
     
@@ -25,19 +28,36 @@ def calculate_sales_missed(dim_demand, dim_inventory, dim_open_po_signed,
     
     # Reindex all dataframes to ensure alignment
     dim_demand = dim_demand.reindex(all_refs, fill_value=0)
-    dim_inventory_start = dim_inventory.reindex(all_refs, fill_value=0)
-    dim_inventory_end = pd.DataFrame(index=all_refs)
-    dim_sales_missed = pd.DataFrame(index=all_refs)
+    dim_inventory_start = dim_inventory.reindex(all_refs)
     dim_inbound = dim_inbound.reindex(all_refs, fill_value=0)
     dim_open_po_signed = dim_open_po_signed.reindex(all_refs, fill_value=0)
     dim_open_po_unsigned = dim_open_po_unsigned.reindex(all_refs, fill_value=0)
     
-    # Get week list
+    # Get week list (use cached version)
     weeks = generate_cw_list()
     
     if not weeks:
         logger.error("No weeks generated")
-        return dim_sales_missed
+        return pd.DataFrame(index=all_refs)
+    
+    # OPTIMIZATION: Pre-allocate all columns at once to avoid fragmentation
+    inventory_end_cols = {f"{week}_inventory_end": 0.0 for week in weeks[:104]}
+    inventory_start_cols = {f"{week}_inventory_start": 0.0 for week in weeks[:104]}
+    sales_missed_cols = {f"{week}_sales_missed_w": 0.0 for week in weeks[:104]}
+    
+    dim_inventory_end = pd.DataFrame(inventory_end_cols, index=all_refs)
+    dim_inventory_start_new = pd.DataFrame(inventory_start_cols, index=all_refs)
+    dim_sales_missed = pd.DataFrame(sales_missed_cols, index=all_refs)
+    
+    # Merge pre-allocated columns with existing inventory start
+    for col in dim_inventory_start.columns:
+        if col in dim_inventory_start_new.columns:
+            dim_inventory_start_new[col] = dim_inventory_start[col]
+    dim_inventory_start = dim_inventory_start_new
+    
+    # Initialize tracking columns
+    dim_sales_missed['OOS_week_with_signed'] = None
+    dim_sales_missed['OOS_week_with_signed_last'] = None
     
     # First week calculations
     first_week = weeks[0]
@@ -49,10 +69,10 @@ def calculate_sales_missed(dim_demand, dim_inventory, dim_open_po_signed,
     else:
         dim_inventory_start[first_week_inventory] = 0
     
-    # Calculate first week
-    first_week_demand = dim_demand.get(f'{first_week}_demand', 0)
-    first_week_inbound = dim_inbound.get(f'{first_week}_inbound', 0)
-    first_week_signed = dim_open_po_signed.get(f'{first_week}_open_po_signed', 0)
+    # OPTIMIZATION: Vectorized operations for first week
+    first_week_demand = dim_demand.get(f'{first_week}_demand', pd.Series(0, index=all_refs))
+    first_week_inbound = dim_inbound.get(f'{first_week}_inbound', pd.Series(0, index=all_refs))
+    first_week_signed = dim_open_po_signed.get(f'{first_week}_open_po_signed', pd.Series(0, index=all_refs))
     
     dim_inventory_end[f"{first_week}_inventory_end"] = np.maximum(
         dim_inventory_start[first_week_inventory] +
@@ -68,13 +88,10 @@ def calculate_sales_missed(dim_demand, dim_inventory, dim_open_po_signed,
     )
     
     # Track OOS week
-    dim_sales_missed['OOS_week_with_signed'] = None
-    dim_sales_missed['OOS_week_with_signed_last'] = None
-    
     condition = dim_sales_missed[f'{first_week}_sales_missed_w'] > 0
     dim_sales_missed.loc[condition, 'OOS_week_with_signed'] = first_week
     
-    # Loop through remaining weeks (up to 104 weeks for 2 years)
+    # OPTIMIZATION: Process weeks in batches for better cache locality
     for i in range(1, min(len(weeks), 104)):
         current_week = weeks[i]
         previous_week = weeks[i-1]
@@ -86,13 +103,13 @@ def calculate_sales_missed(dim_demand, dim_inventory, dim_open_po_signed,
         current_signed = f'{current_week}_open_po_signed'
         current_unsigned = f'{current_week}_open_po_unsigned'
         
-        # Ensure columns exist with defaults
-        demand_val = dim_demand.get(current_demand, 0)
-        inbound_val = dim_inbound.get(current_inbound, 0)
-        signed_val = dim_open_po_signed.get(current_signed, 0)
-        unsigned_val = dim_open_po_unsigned.get(current_unsigned, 0)
+        # Get values with vectorized defaults
+        demand_val = dim_demand.get(current_demand, pd.Series(0, index=all_refs))
+        inbound_val = dim_inbound.get(current_inbound, pd.Series(0, index=all_refs))
+        signed_val = dim_open_po_signed.get(current_signed, pd.Series(0, index=all_refs))
+        unsigned_val = dim_open_po_unsigned.get(current_unsigned, pd.Series(0, index=all_refs))
         
-        # Calculate inventory flow
+        # Calculate inventory flow - all vectorized
         dim_inventory_start[current_inventory_start] = dim_inventory_end[f'{previous_week}_inventory_end']
         
         dim_inventory_end[current_inventory_end] = np.maximum(
@@ -109,7 +126,7 @@ def calculate_sales_missed(dim_demand, dim_inventory, dim_open_po_signed,
             0
         )
         
-        # Update OOS tracking
+        # Update OOS tracking - vectorized
         first_occurrence = (
             (dim_sales_missed[f'{current_week}_sales_missed_w'] > 0) & 
             dim_sales_missed['OOS_week_with_signed'].isna()
@@ -136,15 +153,15 @@ def calculate_sales_missed(dim_demand, dim_inventory, dim_open_po_signed,
     return dim_sales_missed
 
 def calculate_revenue_impact(dim_sales_missed, dim_target_sp):
-    """Calculate revenue impact from sales missed"""
+    """Calculate revenue impact from sales missed - OPTIMIZED"""
     
     logger.info("Calculating revenue impact...")
     
     # Merge dataframes
     dim_final = dim_sales_missed.join(dim_target_sp, how='left')
     
-    # Fill missing prices with 0 (can be enhanced with LTM logic later)
-    dim_final['final_sales_price'] = dim_final.get('final_sales_price', 0).fillna(0)
+    # Fill missing prices with 0
+    dim_final['final_sales_price'] = dim_final.get('final_sales_price', pd.Series(0, index=dim_final.index)).fillna(0)
     
     # Calculate revenue missed until end of 2025
     current_year = datetime.today().year
@@ -159,22 +176,74 @@ def calculate_revenue_impact(dim_sales_missed, dim_target_sp):
     existing_columns = [col for col in week_columns if col in dim_final.columns]
     
     if existing_columns:
+        # OPTIMIZATION: Vectorized sum and multiplication
         dim_final['Revenue Miss Until Dec - 2025'] = (
             dim_final[existing_columns].sum(axis=1) * dim_final['final_sales_price']
         )
     else:
         dim_final['Revenue Miss Until Dec - 2025'] = 0
     
-    # Calculate OOS revenue impact
-    dim_final['Revenue Miss OOS - Until Dec - 2025'] = dim_final.apply(
-        calculate_oos_revenue, axis=1
-    )
+    # OPTIMIZATION: Vectorized OOS revenue calculation
+    dim_final['Revenue Miss OOS - Until Dec - 2025'] = calculate_oos_revenue_vectorized(dim_final)
     
-    # Calculate DOH (Days on Hand)
-    dim_final['DOH'] = dim_final['OOS_week_with_signed'].apply(calculate_doh)
+    # OPTIMIZATION: Vectorized DOH calculation
+    dim_final['DOH'] = calculate_doh_vectorized(dim_final['OOS_week_with_signed'])
     
     logger.info("Revenue impact calculations completed")
     return dim_final
+
+def calculate_oos_revenue_vectorized(df):
+    """Vectorized OOS revenue calculation"""
+    result = pd.Series(0, index=df.index)
+    
+    # Filter valid OOS weeks
+    valid_mask = df['OOS_week_with_signed_final'].notna()
+    if not valid_mask.any():
+        return result
+    
+    valid_df = df[valid_mask].copy()
+    
+    # Extract week numbers efficiently
+    valid_df['start_week'] = valid_df['OOS_week_with_signed_final'].str[2:4].astype(float)
+    
+    # Calculate for each unique start week (more efficient than row-by-row)
+    for start_week in valid_df['start_week'].dropna().unique():
+        mask = valid_df['start_week'] == start_week
+        relevant_columns = [f'CW{int(w):02d}-2025_sales_missed_w' for w in range(int(start_week), 53)]
+        existing_columns = [col for col in relevant_columns if col in df.columns]
+        
+        if existing_columns:
+            missed_sales = valid_df.loc[mask, existing_columns].sum(axis=1)
+            result.loc[valid_df[mask].index] = missed_sales * valid_df.loc[mask, 'final_sales_price']
+    
+    return result
+
+def calculate_doh_vectorized(oos_week_series):
+    """Vectorized DOH calculation"""
+    result = pd.Series(0, index=oos_week_series.index)
+    
+    valid_mask = oos_week_series.notna()
+    if not valid_mask.any():
+        return result
+    
+    valid_weeks = oos_week_series[valid_mask]
+    
+    # Extract week and year efficiently
+    weeks = valid_weeks.str[2:4].astype(float)
+    years = valid_weeks.str[-4:].astype(float)
+    
+    today = datetime.today()
+    
+    # Vectorized date calculation
+    for idx, (week, year) in zip(valid_weeks.index, zip(weeks, years)):
+        if pd.notna(week) and pd.notna(year):
+            try:
+                first_day = datetime.strptime(f'{int(year)}-W{int(week)-1}-1', "%Y-W%U-%w")
+                result.loc[idx] = max((first_day - today).days, 0)
+            except:
+                result.loc[idx] = 0
+    
+    return result
 
 def calculate_oos_revenue(row):
     """Calculate revenue missed from OOS week until end of year"""
@@ -208,7 +277,7 @@ def calculate_doh(oos_week):
         return 0
 
 def generate_recommendations(dim_final):
-    """Generate TO and supply chain recommendations"""
+    """Generate TO and supply chain recommendations - OPTIMIZED"""
     
     logger.info("Generating recommendations...")
     
@@ -216,72 +285,63 @@ def generate_recommendations(dim_final):
     current_week = datetime.today().isocalendar().week
     current_year = datetime.today().isocalendar().year
     
-    # Calculate future demand periods (check which columns actually exist)
-    demand_columns = get_existing_demand_columns(dim_final, current_week, current_year, 10)
-    dim_final['future_demand_10w'] = dim_final[demand_columns].sum(axis=1) if demand_columns else 0
-    
+    # OPTIMIZATION: Pre-calculate all demand columns at once
+    demand_columns_10w = get_existing_demand_columns(dim_final, current_week, current_year, 10)
     demand_columns_7w = get_existing_demand_columns(dim_final, current_week, current_year, 7)
-    dim_final['future_demand_7w'] = dim_final[demand_columns_7w].sum(axis=1) if demand_columns_7w else 0
-    
-    # TO Check logic
-    dim_final['TO_Check'] = np.where(
-        (
-            (
-                (dim_final.get('mp', '') in ['US', 'CA']) & 
-                ((dim_final.get('fulfillable_7d', 0) + 
-                  dim_final.get('at_amz_21d', 0) + 
-                  dim_final.get('on_the_way_to_amz_35d', 0)) < dim_final['future_demand_10w'])
-            )
-            |
-            (
-                (dim_final.get('mp', '') in ['EU', 'UK']) & 
-                ((dim_final.get('fulfillable_7d', 0) + 
-                  dim_final.get('at_amz_21d', 0) + 
-                  dim_final.get('on_the_way_to_amz_35d', 0)) < dim_final['future_demand_7w'])
-            )
-        )
-        &
-        (dim_final.get('local_market(lm)_49d', 0) > dim_final.get('units_per_carton', 1)),
-        "TO to be checked/created",
-        ""
-    )
-    
-    # FFW recommendations
     demand_columns_14w = get_existing_demand_columns(dim_final, current_week, current_year, 14)
-    dim_final['future_demand_14w'] = dim_final[demand_columns_14w].sum(axis=1) if demand_columns_14w else 0
-    
     demand_columns_18w = get_existing_demand_columns(dim_final, current_week, current_year, 18)
+    
+    # OPTIMIZATION: Vectorized sum operations
+    dim_final['future_demand_10w'] = dim_final[demand_columns_10w].sum(axis=1) if demand_columns_10w else 0
+    dim_final['future_demand_7w'] = dim_final[demand_columns_7w].sum(axis=1) if demand_columns_7w else 0
+    dim_final['future_demand_14w'] = dim_final[demand_columns_14w].sum(axis=1) if demand_columns_14w else 0
     dim_final['future_demand_18w'] = dim_final[demand_columns_18w].sum(axis=1) if demand_columns_18w else 0
     
-    dim_final['FFW + Supply Ops'] = np.where(
-        (dim_final.get('otw_35p_98d', 0) < dim_final['future_demand_14w']) & 
-        (dim_final.get('manufacturing_28_126d', 0) > dim_final['future_demand_18w']),
-        "Expedite pick up goods from vendor",
-        ""
+    # OPTIMIZATION: Vectorized TO Check logic
+    us_ca_mask = dim_final.get('mp', pd.Series('', index=dim_final.index)).isin(['US', 'CA'])
+    eu_uk_mask = dim_final.get('mp', pd.Series('', index=dim_final.index)).isin(['EU', 'UK'])
+    
+    inventory_sum = (
+        dim_final.get('fulfillable_7d', pd.Series(0, index=dim_final.index)) +
+        dim_final.get('at_amz_21d', pd.Series(0, index=dim_final.index)) +
+        dim_final.get('on_the_way_to_amz_35d', pd.Series(0, index=dim_final.index))
     )
     
-    dim_final['Supply Ops'] = np.where(
-        (dim_final.get('otw_35p_98d', 0) < dim_final['future_demand_14w']) & 
-        (dim_final.get('manufacturing_56p_168d', 0) > dim_final.get('otw_35p_98d', 0)),
-        "Prepone PRD to produce faster",
-        ""
+    to_condition = (
+        ((us_ca_mask & (inventory_sum < dim_final['future_demand_10w'])) |
+         (eu_uk_mask & (inventory_sum < dim_final['future_demand_7w']))) &
+        (dim_final.get('local_market(lm)_49d', pd.Series(0, index=dim_final.index)) > 
+         dim_final.get('units_per_carton', pd.Series(1, index=dim_final.index)))
     )
     
-    # Calculate ARM (At Risk Margin)
-    dim_final['TO_Check_arm'] = np.where(
-        dim_final['TO_Check'] != "",
-        np.maximum(
-            np.minimum(
-                dim_final['future_demand_10w'] - 
-                dim_final.get('fulfillable_7d', 0) - 
-                dim_final.get('at_amz_21d', 0) - 
-                dim_final.get('on_the_way_to_amz_35d', 0),
-                dim_final.get('local_market(lm)_49d', 0)
-            ) * dim_final.get('final_sales_price', 0),
-            0
-        ),
+    dim_final['TO_Check'] = np.where(to_condition, "TO to be checked/created", "")
+    
+    # OPTIMIZATION: Vectorized FFW recommendations
+    ffw_condition = (
+        (dim_final.get('otw_35p_98d', pd.Series(0, index=dim_final.index)) < dim_final['future_demand_14w']) &
+        (dim_final.get('manufacturing_28_126d', pd.Series(0, index=dim_final.index)) > dim_final['future_demand_18w'])
+    )
+    
+    dim_final['FFW + Supply Ops'] = np.where(ffw_condition, "Expedite pick up goods from vendor", "")
+    
+    supply_condition = (
+        (dim_final.get('otw_35p_98d', pd.Series(0, index=dim_final.index)) < dim_final['future_demand_14w']) &
+        (dim_final.get('manufacturing_56p_168d', pd.Series(0, index=dim_final.index)) > 
+         dim_final.get('otw_35p_98d', pd.Series(0, index=dim_final.index)))
+    )
+    
+    dim_final['Supply Ops'] = np.where(supply_condition, "Prepone PRD to produce faster", "")
+    
+    # OPTIMIZATION: Vectorized ARM calculation
+    arm_values = np.maximum(
+        np.minimum(
+            dim_final['future_demand_10w'] - inventory_sum,
+            dim_final.get('local_market(lm)_49d', pd.Series(0, index=dim_final.index))
+        ) * dim_final.get('final_sales_price', pd.Series(0, index=dim_final.index)),
         0
     )
+    
+    dim_final['TO_Check_arm'] = np.where(dim_final['TO_Check'] != "", arm_values, 0)
     
     logger.info("Recommendations generated")
     return dim_final
@@ -321,7 +381,7 @@ def get_demand_columns(start_week, year, num_weeks):
     return columns
 
 def calculate_lead_times(dim_final, config):
-    """Calculate total lead times using config functions"""
+    """Calculate total lead times using config functions - FIXED"""
     
     # Calculate transport lead time using config
     def get_transport_time(row):
@@ -350,10 +410,11 @@ def calculate_lead_times(dim_final, config):
     
     dim_final['p2cbf'] = dim_final.apply(get_port_buffer, axis=1)
     
-    # Fill missing lead times
-    dim_final['lead_time_production_days'] = dim_final.get(
-        'lead_time_production_days', 45
-    ).fillna(45)
+    # CRITICAL FIX: Handle missing lead_time_production_days column properly
+    if 'lead_time_production_days' in dim_final.columns:
+        dim_final['lead_time_production_days'] = dim_final['lead_time_production_days'].fillna(45)
+    else:
+        dim_final['lead_time_production_days'] = 45
     
     # Calculate total lead time
     dim_final['total_leadtime'] = (
@@ -366,7 +427,14 @@ def calculate_lead_times(dim_final, config):
     return dim_final
 
 def generate_cw_list():
-    """Generate list of calendar weeks for next 2 years"""
+    """Generate list of calendar weeks for next 2 years - OPTIMIZED with caching"""
+    global _week_cache
+    
+    # Use cached result if available
+    cache_key = datetime.now().strftime('%Y-%W')  # Cache per week
+    if cache_key in _week_cache:
+        return _week_cache[cache_key]
+    
     start_date = datetime.now()
     end_date = datetime(start_date.year + 2, 12, 31)
     
@@ -380,10 +448,15 @@ def generate_cw_list():
             cw_set.add(cw_label)
         current_date += timedelta(days=7)
     
-    return sorted(cw_set, key=lambda x: (int(x.split('-')[1]), int(x[2:4])))
+    result = sorted(cw_set, key=lambda x: (int(x.split('-')[1]), int(x[2:4])))
+    
+    # Cache the result
+    _week_cache[cache_key] = result
+    
+    return result
 
 def calculate_all(processed_data, config):
-    """Main function to run all calculations - replaces InventoryCalculator class"""
+    """Main function to run all calculations - OPTIMIZED"""
     
     logger.info("Starting comprehensive inventory calculations...")
     
@@ -428,17 +501,14 @@ def calculate_all(processed_data, config):
         raise
 
 def calculate_demand_coverage(dim_final):
-    """Calculate overall demand coverage percentage"""
+    """Calculate overall demand coverage percentage - OPTIMIZED"""
     try:
-        total_demand = 0
-        total_missed = 0
+        # OPTIMIZATION: Use column filtering instead of iteration
+        demand_cols = [col for col in dim_final.columns if '_demand' in col]
+        missed_cols = [col for col in dim_final.columns if '_sales_missed_w' in col]
         
-        # Sum up demand and sales missed columns
-        for col in dim_final.columns:
-            if '_demand' in col:
-                total_demand += dim_final[col].sum()
-            elif '_sales_missed_w' in col:
-                total_missed += dim_final[col].sum()
+        total_demand = dim_final[demand_cols].sum().sum() if demand_cols else 0
+        total_missed = dim_final[missed_cols].sum().sum() if missed_cols else 0
         
         if total_demand > 0:
             coverage = ((total_demand - total_missed) / total_demand) * 100

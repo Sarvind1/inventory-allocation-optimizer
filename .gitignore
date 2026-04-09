@@ -1,0 +1,70 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+ENV/
+.venv
+*.egg-info/
+dist/
+build/
+*.egg
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+.AppleDouble
+.LSOverride
+
+# Environment variables
+.env
+.env.local
+.env.*.local
+*.env
+
+# Credentials and secrets
+*.pem
+*.key
+*.crt
+credentials.json
+
+# Large output files
+output/*.csv
+output/**/*.csv
+
+# Backup files
+*_backup.py
+*.backup
+*.bak
+
+# Data files (generate locally from DB)
+config/*.csv
+output/.DS_Store
+
+# Jupyter
+.ipynb_checkpoints
+*.ipynb_checkpoints
+
+# Temporary files
+*.tmp
+*.temp
+*.log
+
+# Database connections
+*.db
+*.sqlite

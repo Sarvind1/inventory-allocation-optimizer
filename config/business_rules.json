@@ -1,0 +1,56 @@
+{
+  "asia_countries": [
+    "China",
+    "Hong Kong",
+    "Malaysia",
+    "Taiwan (Province of China)",
+    "Viet Nam",
+    "Korea (the Republic of)",
+    "Singapore",
+    "Japan"
+  ],
+  "po_splitting": {
+    "max_cartons_for_3pl": 5,
+    "default_lead_time_days": 45,
+    "po_processing_time": 15
+  },
+  "inventory_thresholds": {
+    "min_units_per_carton": 1,
+    "default_units_per_carton": 10
+  },
+  "marketplace_mappings": {
+    "Pan-EU": "EU",
+    "DE": "EU",
+    "GB": "UK",
+    "North America": "US"
+  },
+  "signed_stages": [
+    "12. Ready for Batching Pending",
+    "13. Batch Creation Pending",
+    "14. SM Sign-Off Pending",
+    "15. CI Approval Pending",
+    "16. CI Payment Pending",
+    "17. QC Schedule Pending",
+    "18. FFW Booking Missing",
+    "19. Supplier Pickup Date Pending",
+    "20. Pre Pickup Check",
+    "21. FOB Pickup Pending",
+    "22. Non FOB Pickup Pending",
+    "23. INB Creation Pending"
+  ],
+  "unsigned_stages": [
+    "01. PO Approval Pending",
+    "02. Supplier Confirmation Pending",
+    "03. PI Upload Pending",
+    "04. PI Approval Pending",
+    "05. PI Payment Pending",
+    "06. Packaging Pending",
+    "07. Transperancy Label Pending",
+    "08. PRD Pending",
+    "09. Under Production",
+    "10. PRD Confirmation Pending",
+    "11. IM Sign-Off Pending",
+    "A. Anti PO Line",
+    "B. Compliance Blocked"
+  ]
+}

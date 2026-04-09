@@ -8,6 +8,7 @@ import pandas as pd
 import logging
 from datetime import datetime
 from database_connector import DatabaseConnector
+from sql_query_loader import SQLQueryLoader
 import config_loader
 from data_processor import (
     process_demand_data, process_inventory_data, process_open_po_data,
@@ -34,14 +35,24 @@ def main():
         
         # Database connection (uses environment variables if not provided)
         conn_params = {
-            'user': os.getenv('REDSHIFT_USER', 'manh.nguyen@razor-group.com'),
-            'password': os.getenv('REDSHIFT_PASSWORD', 'qdkcTHB8CPfe7AQHVNEF'),
+            'user': os.getenv('REDSHIFT_USER'),
+            'password': os.getenv('REDSHIFT_PASSWORD'),
             'database': os.getenv('REDSHIFT_DATABASE', 'dev'),
-            'host': os.getenv('REDSHIFT_HOST', 'datawarehouse-dev.cdg4y3yokxle.eu-central-1.redshift.amazonaws.com'),
+            'host': os.getenv('REDSHIFT_HOST'),
             'port': int(os.getenv('REDSHIFT_PORT', 5439))
         }
         
-        db = DatabaseConnector(conn_params)
+        db = DatabaseConnector(
+            host=conn_params['host'],
+            dbname=conn_params['database'],
+            user=conn_params['user'],
+            password=conn_params['password'],
+            port=conn_params['port']
+        )
+        
+        # Set up SQL query loader
+        query_loader = SQLQueryLoader()
+        db.set_query_loader(query_loader)
         
         # Define required queries
         required_queries = [

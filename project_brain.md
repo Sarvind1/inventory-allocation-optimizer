@@ -362,3 +362,19 @@ pyyaml>=5.4.0           → Configuration parsing
 **✅ Code Quality**: Clean, maintainable, properly error-handled
 
 **Next Step**: Ready for performance optimizations while preserving all business logic.
+
+---
+
+## 🐛 **Known Issues & Fixes**
+
+### **Issue 1: Duplicate entries in pivot operation**
+**Error**: `ValueError: Index contains duplicate entries, cannot reshape`
+**Location**: `data_processor.py` → `process_inbound_data()` function
+**Root Cause**: When multiple inbound shipments have the same `ref` and `cw` values, direct pivoting fails
+**Solution**: Group by `ref` and `cw` first, sum quantities, then pivot
+```python
+# Fixed approach:
+grouped = df.groupby(['ref', 'cw'], as_index=False).agg({'quantity': 'sum'})
+pivoted = grouped.pivot(index='ref', columns='cw', values='quantity').fillna(0)
+```
+**Reference**: Similar pattern used in original notebook for handling duplicates
