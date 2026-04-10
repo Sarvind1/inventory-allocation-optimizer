@@ -86,3 +86,11 @@ Output files are named with timestamp: `inventory_allocation_YYYYMMDD_HHMMSS.csv
 - Large output CSV files (>500MB) should be managed separately
 - The system includes performance optimizations for processing large datasets
 - Review `OPTIMIZATION_SUMMARY.md` for latest performance improvements
+
+## License
+
+MIT License - See LICENSE file for details
+
+## Contributing
+
+Contributions are welcome! Please feel free to submit issues or pull requests.

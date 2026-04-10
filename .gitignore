@@ -35,7 +35,6 @@ Thumbs.db
 .env
 .env.local
 .env.*.local
-*.env
 
 # Credentials and secrets
 *.pem
